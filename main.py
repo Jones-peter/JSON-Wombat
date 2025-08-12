@@ -2,17 +2,122 @@ import json
 import os
 import sys
 
-from PyQt5.QtCore import Qt, QRegExp, QSettings, QTimer, QSize, QRegularExpression
+from PyQt5.QtCore import Qt, QSettings, QTimer, QSize, QRegularExpression
 from PyQt5.QtGui import (
     QKeySequence, QColor, QTextCharFormat, QSyntaxHighlighter, QTextCursor, QFont, QPalette,
-    QTextDocument, QIcon, QPixmap
+    QTextDocument, QIcon, QPixmap, QTextFormat, QPainter
 )
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QAction, QFileDialog, QMessageBox, QTreeWidget, QTreeWidgetItem,
     QTabWidget, QWidget, QVBoxLayout, QTextEdit, QPushButton, QLabel, QLineEdit, QHBoxLayout,
     QToolBar, QStyleFactory, QShortcut, QStatusBar, QDockWidget,
-    QMenu, QToolButton, QTreeWidgetItemIterator
+    QMenu, QToolButton, QTreeWidgetItemIterator, QPlainTextEdit
 )
+
+
+class LineNumberArea(QWidget):
+    """A helper widget that displays line numbers for the CodeEditor."""
+
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.code_editor = editor
+
+    def sizeHint(self):
+        return QSize(self.code_editor.line_number_area_width(), 0)
+
+    def paintEvent(self, event):
+        self.code_editor.line_number_area_paint_event(event)
+
+
+class CodeEditor(QPlainTextEdit):
+    """A QTextEdit with a line number area and current line highlighting."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.line_number_area = LineNumberArea(self)
+
+        self.blockCountChanged.connect(self.update_line_number_area_width)
+        self.updateRequest.connect(self.update_line_number_area)
+        self.cursorPositionChanged.connect(self.highlight_current_line)
+
+        self.update_line_number_area_width(0)
+        self.set_theme_colors("dark")  # Set a default theme
+
+    def line_number_area_width(self):
+        """Calculates the width needed for the line number area."""
+        digits = 1
+        max_num = max(1, self.blockCount())
+        while max_num >= 10:
+            max_num //= 10
+            digits += 1
+        space = 10 + self.fontMetrics().horizontalAdvance('9') * digits
+        return space
+
+    def update_line_number_area_width(self, _):
+        """Sets the left margin of the editor to make space for line numbers."""
+        self.setViewportMargins(self.line_number_area_width(), 0, 0, 0)
+
+    def update_line_number_area(self, rect, dy):
+        """Scrolls the line number area vertically with the editor."""
+        if dy:
+            self.line_number_area.scroll(0, dy)
+        else:
+            self.line_number_area.update(0, rect.y(), self.line_number_area.width(), rect.height())
+
+        if rect.contains(self.viewport().rect()):
+            self.update_line_number_area_width(0)
+
+    def resizeEvent(self, event):
+        """Repositions the line number area when the editor is resized."""
+        super().resizeEvent(event)
+        cr = self.contentsRect()
+        self.line_number_area.setGeometry(cr.left(), cr.top(), self.line_number_area_width(), cr.height())
+
+    def highlight_current_line(self):
+        """Applies a background color to the line containing the cursor."""
+        extra_selections = []
+        if not self.isReadOnly():
+            selection = QTextEdit.ExtraSelection()
+            selection.format.setBackground(self.current_line_color)
+            selection.format.setProperty(QTextFormat.FullWidthSelection, True)
+            selection.cursor = self.textCursor()
+            selection.cursor.clearSelection()
+            extra_selections.append(selection)
+        self.setExtraSelections(extra_selections)
+
+    def line_number_area_paint_event(self, event):
+        """Paints the line numbers in the line number area."""
+        painter = QPainter(self.line_number_area)
+        painter.fillRect(event.rect(), self.line_number_bg_color)
+
+        block = self.firstVisibleBlock()
+        block_number = block.blockNumber()
+        top = self.blockBoundingGeometry(block).translated(self.contentOffset()).top()
+        bottom = top + self.blockBoundingRect(block).height()
+
+        while block.isValid() and top <= event.rect().bottom():
+            if block.isVisible() and bottom >= event.rect().top():
+                number = str(block_number + 1)
+                painter.setPen(self.line_number_fg_color)
+                painter.drawText(0, int(top), self.line_number_area.width() - 5, self.fontMetrics().height(),
+                                 Qt.AlignRight, number)
+            block = block.next()
+            top = bottom
+            bottom = top + self.blockBoundingRect(block).height()
+            block_number += 1
+
+    def set_theme_colors(self, mode):
+        """Sets the colors for the editor's custom elements."""
+        if mode == "dark":
+            self.current_line_color = QColor(40, 40, 40)
+            self.line_number_bg_color = QColor(45, 45, 45)
+            self.line_number_fg_color = QColor(128, 128, 128)
+        else:  # light
+            self.current_line_color = QColor(232, 242, 255)
+            self.line_number_bg_color = QColor(240, 240, 240)
+            self.line_number_fg_color = QColor(128, 128, 128)
+        self.highlight_current_line()
+        self.line_number_area.update()
 
 
 class JsonHighlighter(QSyntaxHighlighter):
@@ -105,7 +210,7 @@ class JsonTab(QWidget):
 
         self.main_tab_widget = QTabWidget()
 
-        self.editor = QTextEdit()
+        self.editor = CodeEditor()
         self.editor.blockSignals(True)
         self.editor.setPlainText(content)
         self.editor.blockSignals(False)
@@ -142,14 +247,47 @@ class JsonTab(QWidget):
         self.minify_button = QPushButton("Minify JSON")
         self.minify_button.clicked.connect(self.minify)
 
+        self.validate_button = QPushButton("Validate")
+        self.validate_button.clicked.connect(self.validate_json)
+
         self.control_layout.addWidget(self.pretty_button)
         self.control_layout.addWidget(self.minify_button)
+        self.control_layout.addWidget(self.validate_button)
         self.layout.addWidget(self.control_panel)
 
         self.update_views()
 
         self.escape_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
         self.escape_shortcut.activated.connect(self.clear_error_highlight)
+
+    def validate_json(self):
+        """Checks if the current text is well-formed JSON using the internal parser."""
+        # Force an immediate update to get the latest validation status
+        self.update_views()
+
+        if self.is_valid:
+            QMessageBox.information(self, "Validation Successful", "The JSON is well-formed.")
+        else:
+            # The JSON is not valid
+            msg_box = QMessageBox(self)
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setWindowTitle("Validation Failed")
+            msg_box.setText("The document contains invalid JSON.")
+
+            # Provide the specific error message if available
+            if self._last_json_error:
+                msg_box.setInformativeText(f"<b>Error:</b> {self._last_json_error.msg}<br>"
+                                           f"<b>At Line:</b> {self._last_json_error.lineno}, "
+                                           f"<b>Column:</b> {self._last_json_error.colno}")
+                # Add a button to navigate to the error
+                show_error_button = msg_box.addButton("Go to Error", QMessageBox.ActionRole)
+
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            msg_box.exec_()
+
+            # If the user clicked the custom button, navigate to the error
+            if self._last_json_error and msg_box.clickedButton() == show_error_button:
+                self.show_json_error(self._last_json_error)
 
     def clear_error_highlight(self):
         """Clears any extra selections from the editor, such as error highlights."""
