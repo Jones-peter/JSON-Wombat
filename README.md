@@ -22,6 +22,7 @@ JSON Wombat is a multi-platform IDE built with Python and PyQt5 for viewing and 
   <img src="images/Screenshot2.png" alt="JSON Wombat IDE Screenshot" width="400" height="auto">
   <img src="images/screenshot1.png" alt="JSON Wombat IDE Tree View" width="400" height="auto">
 </div>
+
 ## Installation
 
 JSON Wombat is a Python application. To run it, you need to have Python and the `PyQt5` library installed.
