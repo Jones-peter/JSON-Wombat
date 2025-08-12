@@ -2,7 +2,7 @@ import json
 import os
 import sys
 
-from PyQt5.QtCore import Qt, QRegExp, QSettings, QTimer, QSize
+from PyQt5.QtCore import Qt, QRegExp, QSettings, QTimer, QSize, QRegularExpression
 from PyQt5.QtGui import (
     QKeySequence, QColor, QTextCharFormat, QSyntaxHighlighter, QTextCursor, QFont, QPalette,
     QTextDocument, QIcon, QPixmap
@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QAction, QFileDialog, QMessageBox, QTreeWidget, QTreeWidgetItem,
     QTabWidget, QWidget, QVBoxLayout, QTextEdit, QPushButton, QLabel, QLineEdit, QHBoxLayout,
     QToolBar, QStyleFactory, QShortcut, QStatusBar, QDockWidget,
-    QMenu, QToolButton
+    QMenu, QToolButton, QTreeWidgetItemIterator
 )
 
 
@@ -24,13 +24,12 @@ class JsonHighlighter(QSyntaxHighlighter):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.rules = []
         self._rules_compiled = []
 
         self.dark_theme_colors = {
             "keyword": QColor("#569cd6"),
             "number": QColor("#b5cea8"),
-            "string": QColor("#ce9178"),
+            "string": QColor("#008000"),
             "string_key": QColor("#9cdcfe"),
         }
         self.light_theme_colors = {
@@ -40,17 +39,17 @@ class JsonHighlighter(QSyntaxHighlighter):
             "string_key": QColor("#000080"),
         }
         self.formats = {}
-        self.set_theme("light")
 
         patterns = [
-            (r'"[a-zA-Z0-9_]+"\s*:', "string_key"),
+            (r'"[^"\\]*(?:\\.[^"\\]*)*"(?=\s*:)', "string_key"),
             (r'\b(true|false|null)\b', "keyword"),
-            (r'\b[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?\b', "number"),
+            (r'\b-?(?:[0-9]|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?\b', "number"),
             (r'"[^"\\]*(?:\\.[^"\\]*)*"', "string_value")
         ]
 
         for pattern, fmt_key in patterns:
-            self._rules_compiled.append((QRegExp(pattern), fmt_key))
+            self._rules_compiled.append((QRegularExpression(pattern), fmt_key))
+        self.set_theme("light")
 
     def set_theme(self, mode):
         """
@@ -60,6 +59,7 @@ class JsonHighlighter(QSyntaxHighlighter):
 
         self.formats["keyword"] = QTextCharFormat()
         self.formats["keyword"].setForeground(colors["keyword"])
+        self.formats["keyword"].setFontWeight(QFont.Bold)
 
         self.formats["number"] = QTextCharFormat()
         self.formats["number"].setForeground(colors["number"])
@@ -75,14 +75,15 @@ class JsonHighlighter(QSyntaxHighlighter):
     def highlightBlock(self, text):
         """
         Applies highlighting to a single block of text.
-        Uses pre-compiled regular expressions.
+        Uses pre-compiled QRegularExpression for better performance.
         """
         for expression, fmt_key in self._rules_compiled:
-            index = expression.indexIn(text)
-            while index >= 0:
-                length = expression.matchedLength()
-                self.setFormat(index, length, self.formats.get(fmt_key))
-                index = expression.indexIn(text, index + length)
+            iterator = expression.globalMatch(text)
+            while iterator.hasNext():
+                match = iterator.next()
+                start = match.capturedStart()
+                length = match.capturedLength()
+                self.setFormat(start, length, self.formats.get(fmt_key))
 
 
 class JsonTab(QWidget):
@@ -147,6 +148,13 @@ class JsonTab(QWidget):
 
         self.update_views()
 
+        self.escape_shortcut = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self.escape_shortcut.activated.connect(self.clear_error_highlight)
+
+    def clear_error_highlight(self):
+        """Clears any extra selections from the editor, such as error highlights."""
+        self.editor.setExtraSelections([])
+
     def update_views(self):
         """
         Parses the JSON in the editor and updates the Tree View.
@@ -198,29 +206,41 @@ class JsonTab(QWidget):
             parent_item.setText(1, str(data))
             parent_item.setData(1, Qt.UserRole, data)
 
-    def navigate_to_key(self, item):
+    def navigate_to_key(self, item: QTreeWidgetItem, column: int):
         """
-        When an item in the tree view is double-clicked,
-        finds and highlights the corresponding text in the editor using the SearchPanel.
-        This operation should not mark the file as modified.
+        When a key in the tree view is double-clicked, this finds and
+        highlights the corresponding key in the editor, even if the key
+        name is not unique.
         """
-        search_term = ""
-        if item.childCount() > 0:
-            if item.text(0).startswith('['):
-                search_term = str(item.data(1, Qt.UserRole) if item.data(1, Qt.UserRole) is not None else item.text(1))
-            else:
-                search_term = f'"{item.text(0)}"'
-        else:
-            search_term = str(item.data(1, Qt.UserRole) if item.data(1, Qt.UserRole) is not None else item.text(1))
-
-        if not search_term:
+        key_text = item.text(0)
+        if key_text.startswith('['):
             return
 
-        main_window = self.parent().parent()
-        if isinstance(main_window, QMainWindow) and hasattr(main_window, 'search_panel'):
-            search_panel = main_window.search_panel
-            search_panel.search_box.setText(search_term)
-            self.main_tab_widget.setCurrentIndex(0)
+        occurrence_index = 0
+        it = QTreeWidgetItemIterator(self.tree_widget)
+        while it.value():
+            current_item = it.value()
+            if current_item is item:
+                break
+            if current_item.text(0) == key_text:
+                occurrence_index += 1
+            it += 1
+        search_term = f'"{key_text}"'
+        editor = self.editor
+        self.main_tab_widget.setCurrentWidget(editor)
+
+        cursor = QTextCursor(editor.document())
+        for _ in range(occurrence_index + 1):
+            cursor = editor.document().find(search_term, cursor)
+            if cursor.isNull():
+                main_window = self.window()
+                if isinstance(main_window, MainWindow):
+                    main_window.status_bar.showMessage(f"Navigation failed for '{key_text}'.", 3000)
+                return
+
+        if not cursor.isNull():
+            editor.setTextCursor(cursor)
+            editor.ensureCursorVisible()
 
     def show_context_menu(self, position):
         """
@@ -376,6 +396,7 @@ class JsonTab(QWidget):
             return
 
         cursor.setPosition(block.position() + error.colno - 1)
+
         cursor.movePosition(QTextCursor.NextCharacter, QTextCursor.KeepAnchor, 1)
 
         selection = QTextEdit.ExtraSelection()
@@ -402,7 +423,7 @@ class SearchPanel(QDockWidget):
         self.layout.setContentsMargins(5, 5, 5, 5)
 
         find_layout = QHBoxLayout()
-        find_layout.addWidget(QLabel("Find:"))
+        find_layout.addWidget(QLabel("Find     :"))
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Enter search term...")
         self.search_box.textChanged.connect(self.on_search_box_changed)
@@ -488,13 +509,15 @@ class SearchPanel(QDockWidget):
     def clear_highlights(self):
         """Clears all search highlights from the editor using setExtraSelections."""
         editor = self.get_current_editor()
-        if not editor: return
+        if not editor:
+            return
         editor.setExtraSelections([])
 
     def update_match_highlights(self):
         """Applies highlights to all found matches and highlights the current match using setExtraSelections."""
         editor = self.get_current_editor()
-        if not editor: return
+        if not editor:
+            return
 
         extra_selections = []
         for i, match_cursor_template in enumerate(self.matches):
@@ -521,20 +544,11 @@ class SearchPanel(QDockWidget):
 
         document = editor.document()
         cursor = QTextCursor(document)
-        cursor.movePosition(QTextCursor.Start)
-
-        temp_editor = QTextEdit()
-        temp_editor.setDocument(document)
-        temp_cursor = temp_editor.textCursor()
-        temp_cursor.movePosition(QTextCursor.Start)
-        temp_editor.setTextCursor(temp_cursor)
-
         while True:
-            found = temp_editor.find(text, QTextDocument.FindFlags())
-            if found:
-                self.matches.append(temp_editor.textCursor())
-            else:
+            cursor = document.find(text, cursor, QTextDocument.FindFlags())
+            if cursor.isNull():
                 break
+            self.matches.append(QTextCursor(cursor))
 
         if not self.matches:
             self.match_count_label.setText("No matches")
@@ -612,11 +626,11 @@ class SearchPanel(QDockWidget):
                                   os.path.basename(
                                       current_tab.filename) + " *" if current_tab.filename else "Untitled *")
 
-        if self.matches:
-            self.find_next()
-
     def replace_all(self):
-        """Replaces all occurrences of the search term."""
+        """
+        Replaces all occurrences of the search term efficiently and safely.
+        This version avoids creating temporary widgets and uses a single undo block.
+        """
         editor = self.get_current_editor()
         search_text = self.search_box.text()
         replace_text = self.replace_box.text()
@@ -625,41 +639,34 @@ class SearchPanel(QDockWidget):
             return
 
         document = editor.document()
-
-        temp_editor_for_finding = QTextEdit()
-        temp_editor_for_finding.setDocument(document)
-
-        ranges_to_replace = []
-        temp_cursor = temp_editor_for_finding.textCursor()
-        temp_cursor.movePosition(QTextCursor.Start)
-        temp_editor_for_finding.setTextCursor(temp_cursor)
-
+        locations = []
+        find_cursor = QTextCursor(document)
         while True:
-            found = temp_editor_for_finding.find(search_text, QTextDocument.FindFlags())
-            if found:
-                ranges_to_replace.append((temp_editor_for_finding.textCursor().selectionStart(),
-                                          temp_editor_for_finding.textCursor().selectionEnd()))
-            else:
+            find_cursor = document.find(search_text, find_cursor, QTextDocument.FindFlags())
+            if find_cursor.isNull():
                 break
+            locations.append((find_cursor.selectionStart(), find_cursor.selectionEnd()))
 
-        ranges_to_replace.sort(key=lambda x: x[0], reverse=True)
+        if not locations:
+            return
 
-        editor.beginUndoGroup()
         editor.blockSignals(True)
-        for start, end in ranges_to_replace:
-            cursor = QTextCursor(document)
-            cursor.setPosition(start)
-            cursor.setPosition(end, QTextCursor.KeepAnchor)
-            editor.setTextCursor(cursor)
-            editor.insertPlainText(replace_text)
+
+        replace_cursor = QTextCursor(document)
+        replace_cursor.beginEditBlock()
+
+        for start, end in reversed(locations):
+            replace_cursor.setPosition(start)
+            replace_cursor.setPosition(end, QTextCursor.KeepAnchor)
+            replace_cursor.insertText(replace_text)
+
+        replace_cursor.endEditBlock()
         editor.blockSignals(False)
-        editor.endUndoGroup()
 
         current_tab = self.parent().tabs.currentWidget()
         if current_tab:
-            current_tab.modified = True
-            tab_widget = current_tab.parent().parent()
-            tab_widget.setTabText(tab_widget.indexOf(current_tab), os.path.basename(current_tab.filename) + " *" if current_tab.filename else "Untitled *")
+            current_tab.mark_modified()
+
         self.find_all_matches(search_text)
 
     def hide_and_clear(self):
