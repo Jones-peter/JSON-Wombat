@@ -1,6 +1,6 @@
 <p align="center">
-  <img src="icons/json_logo.png" alt="JSON Wombat Logo" width="100" height="100"><br>
-  <img src="icons/json_wombat_gradient.svg" alt="JSON Wombat Title" width="300">
+  <img src="icons/json_logo.png" alt="JSON Wombat Logo" width="85" height="85"><br>
+  <img src="icons/json_wombat_gradient.svg" alt="JSON Wombat Title" width="280">
 </p>
 
 ### A Simple Yet Powerful JSON Editor
