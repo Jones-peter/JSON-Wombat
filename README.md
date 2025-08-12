@@ -1,8 +1,11 @@
-# <img src="icons/json_logo.png" alt="JSON Wombat Logo" width="40" height="40"> JSON Wombat
-## A Simple Yet Powerful JSON Editor
+<p align="center">
+  <img src="icons/json_logo.png" alt="JSON Wombat Logo" width="100" height="100"><br>
+  <img src="icons/json_wombat_gradient.svg" alt="JSON Wombat Title" width="300">
+</p>
+
+### A Simple Yet Powerful JSON Editor
 
 JSON Wombat is a multi-platform IDE built with Python and PyQt5 for viewing and editing JSON files. It offers a clean interface with essential tools for developers and data analysts who frequently work with JSON data.
-
 ## Features
 
   * **Multi-tabbed Interface**: Open and manage multiple JSON files in a single window.
