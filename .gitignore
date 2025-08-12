@@ -1,0 +1,32 @@
+# PyCharm specific files
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Visual Studio Code specific files
+.vscode/
+
+# Python specific files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Operating System specific files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Virtual environment
+venv/
+env/
+.venv/
+# Other
+dist/
+build/
+*.egg-info/
+.coverage
+
+# Exclude a specific folder named 'workouts'
+workouts/
